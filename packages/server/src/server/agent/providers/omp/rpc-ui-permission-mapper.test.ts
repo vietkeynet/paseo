@@ -115,7 +115,7 @@ describe("OMP rpc-ui permission mapper", () => {
     });
   });
 
-  test("rejects approval lookalikes and unknown tools", () => {
+  test("rejects approval lookalikes and non-tool selects", () => {
     expect(
       classifyOmpRpcUiPermissionRequest({
         type: "extension_ui_request",
@@ -128,12 +128,69 @@ describe("OMP rpc-ui permission mapper", () => {
     expect(
       classifyOmpRpcUiPermissionRequest({
         type: "extension_ui_request",
-        id: "unknown-tool",
+        id: "ordinary-select",
         method: "select",
-        title: "Allow tool: custom_tool\nReason: needs approval",
-        options: ["Approve", "Deny"],
+        title: "Pick a provider",
+        options: ["Approve", "Approve bash for this session", "Deny"],
       }),
     ).toEqual({ kind: "passthrough" });
+    expect(
+      classifyOmpRpcUiPermissionRequest({
+        type: "extension_ui_request",
+        id: "malformed-approval",
+        method: "select",
+        title: "Allow tool: bash\nCommand: echo hi",
+        options: ["Approve", "Approve all forever", "Deny"],
+      }),
+    ).toEqual({ kind: "passthrough" });
+  });
+
+  test("recognizes OMP 18.14.1 per-session approval choices without granting session access", () => {
+    const request = classifyOmpRpcUiPermissionRequest({
+      type: "extension_ui_request",
+      id: "three-option-bash",
+      method: "select",
+      title: "Allow tool: bash\nCommand: pwd",
+      options: ["Approve", "Approve bash for this session", "Deny"],
+    });
+    expect(request.kind).toBe("tool");
+    if (request.kind !== "tool") return;
+    expect(request.request.name).toBe("bash");
+    expect(request.request.detail).toEqual({ type: "shell", command: "pwd" });
+    expect(buildOmpRpcUiPermissionResponse(request.request, { behavior: "allow" })).toEqual({
+      value: "Approve",
+    });
+    expect(buildOmpRpcUiPermissionResponse(request.request, { behavior: "deny" })).toEqual({
+      value: "Deny",
+    });
+    expect(
+      buildOmpRpcUiPermissionResponse(request.request, {
+        behavior: "allow",
+        selectedActionId: "allow_always",
+      }),
+    ).toEqual({ value: "Approve" });
+  });
+
+  test("routes named OMP and native Paseo tool approvals through the tool permission UI", () => {
+    for (const toolName of ["custom_tool", "List agents"]) {
+      const classification = classifyOmpRpcUiPermissionRequest({
+        type: "extension_ui_request",
+        id: "approval-" + toolName,
+        method: "select",
+        title: "Allow tool: " + toolName + "\nReason: needs authorization",
+        options: ["Approve", "Approve " + toolName + " for this session", "Deny"],
+      });
+      expect(classification.kind).toBe("tool");
+      if (classification.kind !== "tool") continue;
+      expect(classification.request).toMatchObject({
+        name: toolName,
+        kind: "tool",
+        metadata: { approveValue: "Approve", denyValue: "Deny" },
+      });
+      expect(buildOmpRpcUiPermissionResponse(classification.request, { behavior: "deny" })).toEqual({
+        value: "Deny",
+      });
+    }
   });
 
   test("responds to tool approvals with exact select values", () => {
