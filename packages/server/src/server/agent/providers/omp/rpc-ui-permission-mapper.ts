@@ -21,9 +21,9 @@ export type OmpRpcUiPermissionClassification =
 type ExtensionUiRequestEvent = Extract<OmpRuntimeEvent, { type: "extension_ui_request" }>;
 
 interface ToolApprovalDescriptor {
-  toolName: "bash" | "edit" | "write";
+  toolName: string;
   args: AgentMetadata;
-  detail: ToolCallDetail;
+  detail?: ToolCallDetail;
   description?: string;
 }
 
@@ -126,7 +126,15 @@ function parseToolApprovalDescriptor(
     case "write":
       return parseWriteApproval(bodyLines);
     default:
-      return null;
+      // OMP-native and Paseo host tools use the same approval dialog.
+      // Only map a named tool after strictly validating approval options;
+      // do not confuse ordinary select questions with tool permissions.
+      if (!rawToolName) return null;
+      return {
+        toolName: rawToolName,
+        args: {},
+        ...(body.trim() ? { description: body.trim().slice(0, 500) } : {}),
+      };
   }
 }
 
@@ -183,10 +191,20 @@ function parseWriteApproval(lines: string[]): ToolApprovalDescriptor | null {
 }
 
 function hasExactToolApprovalOptions(options: unknown): boolean {
+  if (!Array.isArray(options)) return false;
+
+  // Paseo 0.14.0 expects two choices; OMP 18.14.1 also offers
+  // "Approve <tool> for this session". Always respond with one-shot
+  // "Approve", never the session-wide grant.
+  if (options.length === TOOL_APPROVAL_OPTIONS.length) {
+    return options.every((option, index) => option === TOOL_APPROVAL_OPTIONS[index]);
+  }
   return (
-    Array.isArray(options) &&
-    options.length === TOOL_APPROVAL_OPTIONS.length &&
-    options.every((option, index) => option === TOOL_APPROVAL_OPTIONS[index])
+    options.length === 3 &&
+    options[0] === TOOL_APPROVAL_APPROVE_VALUE &&
+    typeof options[1] === "string" &&
+    /^Approve .+ for this session$/.test(options[1]) &&
+    options[2] === TOOL_APPROVAL_DENY_VALUE
   );
 }
 
